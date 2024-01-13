@@ -33,12 +33,12 @@ const authenticateToken = async (request, response, next) => {
     jwtToken = authHeader.split(' ')[1]
   }
   if (authHeader === undefined) {
-    response.status = 401
+    response.status(401)
     response.send('Invalid JWT Token')
   } else {
     jwt.verify(jwtToken, 'MY_SECRET_CODE', (error, payload) => {
       if (error) {
-        response.status = 401
+        response.status(401)
         response.send('Invalid JWT Token')
       } else {
         request.username = payload.username
@@ -66,15 +66,15 @@ app.post('/register/', async (request, response) => {
     user (name, username, password, gender) 
     VALUES ('${name}', '${username}', '${hashedPassword}', '${gender}')`
     if (password.length < 6) {
-      response.status = 400
+      response.status(400)
       response.send('Password is too short')
     } else {
       await db.run(createUserQuery)
-      response.status = 200
+      response.status(200)
       response.send('User created successfully')
     }
   } else {
-    response.status = 400
+    response.status(400)
     response.send('User already exists')
   }
 })
@@ -91,7 +91,7 @@ app.post('/login/', async (request, response) => {
     username = '${username}'`
   const dbUser = await db.get(selectUserQuery)
   if (dbUser === undefined) {
-    response.status = 400
+    response.status(400)
     response.send('Invalid user')
   } else {
     isPasswordMatched = await bcrypt.compare(password, dbUser.password)
@@ -100,7 +100,7 @@ app.post('/login/', async (request, response) => {
       const jwtToken = jwt.sign(payload, 'MY_SECRET_CODE')
       response.send({jwtToken})
     } else {
-      response.status = 400
+      response.status(400)
       response.send('Invalid password')
     }
   }
@@ -180,7 +180,7 @@ app.get('/user/followers/', authenticateToken, async (request, response) => {
   SELECT 
   follower_user_id 
   FROM follower 
-  WHERE following_user_id=${getUserId.user_id};`
+  WHERE following_user_id = ${getUserId.user_id};`
   const getFollowerIdsArray = await db.all(getFollowerIdsQuery)
   const getFollowerIds = getFollowerIdsArray.map(eachUser => {
     return eachUser.follower_user_id
@@ -207,33 +207,24 @@ app.get('/tweets/:tweetId/', authenticateToken, async (request, response) => {
   WHERE username='${username}';`
   const getUserId = await db.get(getUserIdQuery)
 
-  const getFollowingIdsQuery = `
+  const isFollowingQuery = `
   SELECT 
-  following_user_id 
-  FROM follower 
-  WHERE follower_user_id = ${getUserId.user_id}`
-  const getFollowingIdsArray = await db.all(getFollowingIdsQuery)
-  const getFollowingIds = getFollowingIdsArray.map(eachUser => {
-    return eachUser.following_user_id
-  })
+  t.tweet
+  FROM tweet AS t
+  INNER JOIN user AS u ON t.user_id = u.user_id
+  INNER JOIN follower AS f ON u.user_id = f.following_user_id
+  WHERE
+  t.tweet_id = ${tweetId}
+  AND f.follower_user_id = ${getUserId.user_id}`
+  const isFollowing = await db.get(isFollowingQuery)
 
-  const getTweetIdsQuery = `
-  SELECT 
-  tweet_id 
-  FROM tweet 
-  WHERE user_id IN (${getFollowingIds});`
-  const getTweetsArray = await db.all(getTweetIdsQuery)
-  const followingTweetIds = getTweetsArray.map(eachTweet => {
-    return eachTweet.tweet_id
-  })
-
-  if (followingTweetIds.includes(parseInt(tweetId))) {
+  if (isFollowing) {
     const tweetDetailsQuery = `
     SELECT
     t.tweet,
-    t.date_time AS tweetDate,
-    COUNT(l.user_id) AS likes,
-    COUNT(r.user_id) AS replies
+    COUNT(DISTINCT l.user_id) AS likes,
+    COUNT(DISTINCT r.user_id) AS replies,
+    t.date_time AS tweetDate
     FROM
     tweet AS t
     LEFT JOIN like AS l ON t.tweet_id = l.tweet_id
@@ -242,11 +233,10 @@ app.get('/tweets/:tweetId/', authenticateToken, async (request, response) => {
     t.tweet_id = ${tweetId}
     GROUP BY
     t.tweet_id, t.tweet, t.date_time`
-
     const tweetDetails = await db.get(tweetDetailsQuery)
     response.send(tweetDetails)
   } else {
-    response.status = 401
+    response.status(401)
     response.send('Invalid Request')
   }
 })
@@ -304,7 +294,7 @@ app.get(
       })
       response.send(listOfUserNames(likedUserNames))
     } else {
-      response.status = 401
+      response.status(401)
       response.send('Invalid Request')
     }
   },
@@ -364,7 +354,7 @@ app.get(
       }))
       response.send(listOfUserReplies(repliedUserNames))
     } else {
-      response.status = 401
+      response.status(401)
       response.send('Invalid Request')
     }
   },
@@ -372,7 +362,6 @@ app.get(
 
 //Returns a list of all tweets of the user
 app.get('/user/tweets/', authenticateToken, async (request, response) => {
-  const {tweetId} = request.params
   const {username} = request
   const getUserIdQuery = `
   SELECT 
@@ -391,7 +380,8 @@ app.get('/user/tweets/', authenticateToken, async (request, response) => {
   tweet 
   LEFT JOIN like ON tweet.tweet_id = like.tweet_id
   LEFT JOIN reply ON tweet.tweet_id = reply.tweet_id
-  WHERE tweet.user_id = ${getUserId.user_id} `
+  WHERE tweet.user_id = ${getUserId.user_id} 
+  GROUP BY tweet.tweet_id`
 
   const userTweetsArray = await db.all(getUserTweetsQuery)
   const userTweets = userTweetsArray.map(eachTweet => ({
@@ -400,6 +390,71 @@ app.get('/user/tweets/', authenticateToken, async (request, response) => {
     replies: eachTweet.replies,
     dateTime: eachTweet.dateTime,
   }))
+  response.send(userTweets)
+})
+
+//Create a tweet in the tweet table
+app.post('/user/tweets/', authenticateToken, async (request, response) => {
+  const {username} = request
+  const getUserIdQuery = `
+  SELECT 
+  user_id
+  FROM user 
+  WHERE username='${username}';`
+  const getUserId = await db.get(getUserIdQuery)
+
+  const {tweet} = request.body
+  const createTweetQuery = `
+  INSERT INTO 
+  tweet (user_id, tweet, date_time) 
+  VALUES (${getUserId.user_id}, '${tweet}', CURRENT_TIMESTAMP)`
+  await db.run(createTweetQuery)
+  response.send('Created a Tweet')
+})
+
+//If the user deletes his tweet
+app.delete(
+  '/tweets/:tweetId/',
+  authenticateToken,
+  async (request, response) => {
+    const {tweetId} = request.params
+    const {username} = request
+    const getUserIdQuery = `
+  SELECT 
+  user_id
+  FROM user 
+  WHERE username='${username}';`
+    const getUserId = await db.get(getUserIdQuery)
+
+    const getUserTweetsQuery = `
+  SELECT 
+  tweet_id
+  FROM 
+  tweet 
+  WHERE 
+  user_id = ${getUserId.user_id}`
+    const userTweetsArray = await db.all(getUserTweetsQuery)
+    const userTweets = userTweetsArray.map(eachTweet => {
+      return eachTweet.tweet_id
+    })
+
+    if (userTweets.includes(parseInt(tweetId))) {
+      const deleteTweetQuery = `
+    DELETE 
+    FROM 
+    tweet 
+    WHERE 
+    tweet_id = ${tweetId}`
+      await db.run(deleteTweetQuery)
+      response.send('Tweet Removed')
+    } else {
+      response.status(401)
+      response.send('Invalid Request')
+    }
+  },
+)
+module.exports = app
+
   response.send(userTweets)
 })
 
