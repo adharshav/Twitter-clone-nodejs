@@ -200,41 +200,61 @@ app.get('/user/followers/', authenticateToken, async (request, response) => {
 app.get('/tweets/:tweetId/', authenticateToken, async (request, response) => {
   const {tweetId} = request.params
   const {username} = request
-  const getUserIdQuery = `
-  SELECT 
-  user_id
-  FROM user 
+  const getUserIdQuery = `SELECT 
+  user_id 
+  FROM 
+  user 
   WHERE username='${username}';`
   const getUserId = await db.get(getUserIdQuery)
 
-  const isFollowingQuery = `
+  const getFollowingIdsQuery = `
   SELECT 
-  t.tweet
-  FROM tweet AS t
-  INNER JOIN user AS u ON t.user_id = u.user_id
-  INNER JOIN follower AS f ON u.user_id = f.following_user_id
-  WHERE
-  t.tweet_id = ${tweetId}
-  AND f.follower_user_id = ${getUserId.user_id}`
-  const isFollowing = await db.get(isFollowingQuery)
+  following_user_id 
+  FROM 
+  follower 
+  WHERE follower_user_id=${getUserId.user_id};`
+  const getFollowingIdsArray = await db.all(getFollowingIdsQuery)
+  const getFollowingIds = getFollowingIdsArray.map(
+    eachFollower => eachFollower.following_user_id,
+  )
 
-  if (isFollowing) {
-    const tweetDetailsQuery = `
-    SELECT
-    t.tweet,
-    COUNT(DISTINCT l.user_id) AS likes,
-    COUNT(DISTINCT r.user_id) AS replies,
-    t.date_time AS tweetDate
-    FROM
-    tweet AS t
-    LEFT JOIN like AS l ON t.tweet_id = l.tweet_id
-    LEFT JOIN reply AS r ON t.tweet_id = r.tweet_id
-    WHERE
-    t.tweet_id = ${tweetId}
-    GROUP BY
-    t.tweet_id, t.tweet, t.date_time`
-    const tweetDetails = await db.get(tweetDetailsQuery)
-    response.send(tweetDetails)
+  const getTweetIdsQuery = `SELECT 
+  tweet_id 
+  FROM 
+  tweet 
+  WHERE user_id IN (${getFollowingIds});`
+  const getTweetIdsArray = await db.all(getTweetIdsQuery)
+  const followingTweetIds = getTweetIdsArray.map(eachId => eachId.tweet_id)
+
+  if (followingTweetIds.includes(parseInt(tweetId))) {
+    const likesCountQuery = `
+    SELECT 
+    COUNT(user_id) AS likes 
+    FROM like 
+    WHERE tweet_id=${tweetId};`
+    const likesCount = await db.get(likesCountQuery)
+
+    const replyCountQuery = `
+    SELECT 
+    COUNT(user_id) AS replies 
+    FROM reply 
+    WHERE tweet_id=${tweetId};`
+    const replyCount = await db.get(replyCountQuery)
+
+    const tweetDateQuery = `
+    SELECT 
+    tweet, date_time 
+    FROM tweet 
+    WHERE tweet_id=${tweetId};`
+    const tweetDate = await db.get(tweetDateQuery)
+
+    const result = {
+      tweet: tweetDate.tweet,
+      likes: likesCount.likes,
+      replies: replyCount.replies,
+      dateTime: tweetDate.date_time,
+    }
+    response.send(result)
   } else {
     response.status(401)
     response.send('Invalid Request')
@@ -454,7 +474,4 @@ app.delete(
   },
 )
 module.exports = app
-
-  response.send(userTweets)
-})
 
